@@ -1,0 +1,301 @@
+library("haven")
+library("dplyr")
+library("oaxaca")
+keep_collum<- c("STU_ID","BYS24C", "BYRACE", "BYS24F", "F3ERN2011", 
+                "F3D26", "BYP35B", "BYP35A", "BYOCCUM", "BYOCCUF",
+                "BYP11", "BYDOB_P", "BYP23", "F2D08A_P", "F2D08B_P", 
+                "F2D08D_P")
+
+df <- read_dta("C:/Users/akash/OneDrive - The Bolles School/Desktop/Lumiere_Research/Data/els_02_12_byf3pststu_v1_0.dta", col_select = keep_collum)
+df <- zap_labels(df)
+
+raw_df <- df
+
+# initial filters - get rid of rows without enough data
+
+# filter out all of the data without absentee responses
+df <- df %>% filter(BYS24C > 0) 
+# filter out all people who didnt answer how many times they were suspended
+df <- df %>% filter(BYS24C > 0)
+# get rid of people witghout income data
+df <- df %>% filter(F3ERN2011 > -1) # emplyment income
+df <- df %>% filter(F3D26 > -1) # other income
+# get rid of the students who's parents did not give their education
+df <- df %>% filter(BYP35B > 0)  # father
+df <- df %>% filter(BYP35A > 0)  # mother
+  
+#filter out students without race listed and natives
+df <- df %>% filter(BYRACE > 1)
+df <- df %>% filter(BYRACE != 6) # get rid of mixed ppl
+df<- df %>% mutate(BYRACE = ifelse(BYRACE == 5, 4, BYRACE)) # combine hispanic categories
+df<- df %>% mutate(isBlHs = ifelse((BYRACE == 3 | BYRACE == 4),1,ifelse(BYRACE == 7, 0, NA_real_)))
+
+# types of job for parents
+blue_collar <- c(2, 3, 4, 5, 7, 8, 12, 15, 16) # define what jobs are blue collar
+white_collar <- c(1, 6, 9, 10, 11, 13, 14) # define what jobs are white collar
+
+df<- df %>% mutate(motherJob = ifelse(BYOCCUM %in% white_collar,2,
+                                      ifelse(BYOCCUM %in% blue_collar, 
+                                             1,ifelse(BYOCCUM == 0, 0, NA_real_))))
+df<- df %>% mutate(fatherJob = ifelse(BYOCCUF %in% white_collar,2,
+                                      ifelse(BYOCCUF %in% blue_collar, 
+                                             1,ifelse(BYOCCUF == 0, 0, NA_real_))))
+
+#find mother's age when she had child
+
+df$StudentBirthYear <- df$BYDOB_P %/% 100
+df <- df %>% mutate(motherBirthAge = StudentBirthYear - BYP11)
+
+# determine number of male/female guardians
+df$hasMaleGuardian <- df$F2D08A_P
+df$hasFemaleGuardian <- df$F2D08B_P
+df <- df %>% filter(hasMaleGuardian >= 0)  # 1 = at least one male guardian
+df <- df %>% filter(hasFemaleGuardian >= 0) # 1 = same thing for female guardian
+
+
+
+# number of siblings
+df$siblings <- df$F2D08D_P
+df <- df %>% filter(siblings >= 0) 
+
+#college education
+df<- df %>% mutate(dadCollege = ifelse(BYP35B >= 6,1, 0))
+df<- df %>% mutate(momCollege = ifelse(BYP35A >= 6,1, 0))
+
+
+# birth location - 
+df <- df %>% mutate (birthLocation = ifelse(BYP23 == 1, 1, ifelse(BYP23 == 2 | BYP23 == 3, 0, NA_real_))) # 0 = us born
+
+
+#Create total income variable
+df <- df %>% mutate(totalIncome = F3ERN2011 + F3D26)
+df <- df %>% mutate(lnTotalIncome = log1p(totalIncome))
+
+#suspensions
+df<- df %>% mutate(everSuspended = ifelse(BYS24F != 1,1,0))
+
+#change BYS24C (number of times absent) into chronically absent - 1 = true, 0 = false
+df <- df%>% mutate(chronAbsent = ifelse((BYS24C == 5 | BYS24C == 4), 1,0))
+
+
+
+# regform <- "everSuspended ~ lnTotalIncome + factor(isBlHs)+ factor(BYP35A)+ factor(BYP35B)"
+
+
+
+#Oaxca Decompositions
+
+df_clean <- df[complete.cases(df$lnTotalIncome, df$everSuspended, df$isBlHs, df$motherBirthAge, df$motherJob, df$fatherJob, df$siblings, df$hasMaleGuardian, df$hasFemaleGuardian),]
+
+oax <- oaxaca(everSuspended ~ lnTotalIncome+ momCollege + dadCollege + motherBirthAge + motherJob + fatherJob + siblings + 
+                hasMaleGuardian + hasFemaleGuardian | isBlHs,data = df_clean)
+
+summary(oax)
+
+plot(oax, decomposition = "twofold", group.weight = -1,
+     unexplained.split = TRUE, components = c("unexplained A","unexplained B"), 
+     component.labels = c("unexplained A" = "White", "unexplained B" 
+      = "Black and Hispanic"),variable.labels = c("momCollege" = "Mom College", "lnTotalIncome" = "Household Income", "dadCollege"="Dad College", "motherBirthAge" = "Mother's Birth Age","motherJob" = "Mother's Job", "fatherJob" = "Father's Job", "siblings" = "Siblings", "hasMaleGuardian" = "Has Male Guardian", "hasFemaleGuardian" = "Has Female Guardian"),
+     component.left = TRUE)
+plot(oax,
+     decomposition = "twofold",
+     group.weight = -1,
+     unexplained.split = TRUE,
+     components = c("unexplained A","unexplained B"), 
+     component.labels = c("unexplained A" = "White", "unexplained B" = "Black and Hispanic"),
+     variable.labels = c("momCollege" = "Mom College", 
+                         "lnTotalIncome" = "Household Income", 
+                         "dadCollege" = "Dad College", 
+                         "motherBirthAge" = "Mother's Birth Age",
+                         "motherJob" = "Mother's Job", 
+                         "fatherJob" = "Father's Job", 
+                         "siblings" = "Siblings", 
+                         "hasMaleGuardian" = "Has Male Guardian", 
+                         "hasFemaleGuardian" = "Has Female Guardian"),
+     component.left = TRUE,
+     variables = c("momCollege", "dadCollege","lnTotalIncome", "motherBirthAge", "motherJob")  # only first 5
+)
+
+plot(oax,
+     decomposition = "twofold",
+     group.weight = -1,
+     unexplained.split = TRUE,
+     components = c("unexplained A","unexplained B"), 
+     component.labels = c("unexplained A" = "White", "unexplained B" = "Black and Hispanic"),
+     variable.labels = c("momCollege" = "Mom College", 
+                         "lnTotalIncome" = "Household Income", 
+                         "dadCollege" = "Dad College", 
+                         "motherBirthAge" = "Mother's Birth Age",
+                         "motherJob" = "Mother's Job", 
+                         "fatherJob" = "Father's Job", 
+                         "siblings" = "Siblings", 
+                         "hasMaleGuardian" = "Has Male Guardian", 
+                         "hasFemaleGuardian" = "Has Female Guardian"),
+     component.left = TRUE,
+     variables = c("fatherJob", "siblings", "hasMaleGuardian", "hasFemaleGuardian")  # the other 5
+)
+
+
+
+
+
+plot(oax, decomposition = "twofold", group.weight = -1,
+     unexplained.split = TRUE, components = c("unexplained A","unexplained B"), 
+     component.labels = c("unexplained A" = "White", "unexplained B" 
+                          = "Black and Hispanic"),variable.labels = c("momCollege" = "Mom College", "lnTotalIncome" = "Household Income", "dadCollege"="Dad College", "motherBirthAge" = "Mother's Birth Age","motherJob" = "Mother's Job", "fatherJob" = "Father's Job", "siblings" = "Siblings", "hasMaleGuardian" = "Has Male Guardian", "hasFemaleGuardian" = "Has Female Guardian"),
+     component.left = TRUE)
+plot(oax, components = c("endowments"),variable.labels = 
+       c("momCollege" = "Mom College", "lnTotalIncome" = "Household Income", "dadCollege" = "Dad College", "motherBirthAge" = "Mother's Birth Age","motherJob" = "Mother's Job", "fatherJob" = "Father's Job", "siblings" = "Siblings", "hasMaleGuardian" = "Has Male Guardian", "hasFemaleGuardian" = "Has Female Guardian")) # edit the variable names to make it look nice all the variables should be uniform and similar
+plot(oax, components = c("coefficients"), variable.labels = c("momCollege" = "Mom College", "lnTotalIncome" = "Household Income", "dadCollege"="Dad College", "motherBirthAge" = "Mother's Birth Age","motherJob" = "Mother's Job", "fatherJob" = "Father's Job", "siblings" = "Siblings", "hasMaleGuardian" = "Has Male Guardian", "hasFemaleGuardian" = "Has Female Guardian"))
+oax$y
+oax$threefold$overall
+oax$x$x.mean.diff["lnTotalIncome"]
+
+
+
+
+
+
+
+plot(oax,
+     decomposition = "twofold",
+     group.weight = -1,
+     unexplained.split = TRUE,
+     components = c("unexplained A","unexplained B"), 
+     component.labels = c("unexplained A" = "White", "unexplained B" = "Black and Hispanic"),
+     variable.labels = c("momCollege" = "Mom College", 
+                         "lnTotalIncome" = "Household Income", 
+                         "dadCollege" = "Dad College", 
+                         "motherBirthAge" = "Mother's Birth Age",
+                         "motherJob" = "Mother's Job", 
+                         "fatherJob" = "Father's Job", 
+                         "siblings" = "Siblings", 
+                         "hasMaleGuardian" = "Has Male Guardian", 
+                         "hasFemaleGuardian" = "Has Female Guardian"),
+     component.left = TRUE,
+     variables = c("fatherJob", "siblings", "hasMaleGuardian", "hasFemaleGuardian")  # the other 5
+)
+
+plot(oax,
+     decomposition = "twofold",
+     group.weight = -1,
+     unexplained.split = TRUE,
+     components = c("unexplained A","unexplained B"), 
+     component.labels = c("unexplained A" = "White", "unexplained B" = "Black and Hispanic"),
+     variable.labels = c("momCollege" = "Mom College", 
+                         "lnTotalIncome" = "Household Income", 
+                         "dadCollege" = "Dad College", 
+                         "motherBirthAge" = "Mother's Birth Age",
+                         "motherJob" = "Mother's Job", 
+                         "fatherJob" = "Father's Job", 
+                         "siblings" = "Siblings", 
+                         "hasMaleGuardian" = "Has Male Guardian", 
+                         "hasFemaleGuardian" = "Has Female Guardian"),
+     component.left = TRUE,
+     variables = c("fatherJob", "siblings", "hasMaleGuardian", "hasFemaleGuardian")  # the other 5
+)
+
+raw <- raw_df %>%
+  mutate(
+    BYRACE = ifelse(BYRACE == 5, 4, BYRACE),
+    isBlHs = ifelse(BYRACE %in% c(3,4), 1,
+                    ifelse(BYRACE == 7, 0, NA))
+  ) %>%
+  filter(!is.na(isBlHs))
+
+missing_table <- data.frame(
+  Variable = c(
+    "Household Income",
+    "Mom College",
+    "Dad College",
+    "Mother's Birth Age",
+    "Mother's Job",
+    "Father's Job",
+    "Siblings",
+    "Has Male Guardian",
+    "Has Female Guardian"
+  ),
+  White = c(
+    mean(raw$isBlHs == 0 & (raw$F3ERN2011 < 0 | raw$F3D26 < 0))*100,
+    mean(raw$isBlHs == 0 & raw$BYP35A <= 0)*100,
+    mean(raw$isBlHs == 0 & raw$BYP35B <= 0)*100,
+    mean(raw$isBlHs == 0 & is.na(raw$BYDOB_P))*100,
+    mean(raw$isBlHs == 0 & !(raw$BYOCCUM %in% c(0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16)))*100,
+    mean(raw$isBlHs == 0 & !(raw$BYOCCUF %in% c(0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16)))*100,
+    mean(raw$isBlHs == 0 & raw$F2D08D_P < 0)*100,
+    mean(raw$isBlHs == 0 & raw$F2D08A_P < 0)*100,
+    mean(raw$isBlHs == 0 & raw$F2D08B_P < 0)*100
+  ),
+  Minority = c(
+    mean(raw$isBlHs == 1 & (raw$F3ERN2011 < 0 | raw$F3D26 < 0))*100,
+    mean(raw$isBlHs == 1 & raw$BYP35A <= 0)*100,
+    mean(raw$isBlHs == 1 & raw$BYP35B <= 0)*100,
+    mean(raw$isBlHs == 1 & is.na(raw$BYDOB_P))*100,
+    mean(raw$isBlHs == 1 & !(raw$BYOCCUM %in% c(0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16)))*100,
+    mean(raw$isBlHs == 1 & !(raw$BYOCCUF %in% c(0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16)))*100,
+    mean(raw$isBlHs == 1 & raw$F2D08D_P < 0)*100,
+    mean(raw$isBlHs == 1 & raw$F2D08A_P < 0)*100,
+    mean(raw$isBlHs == 1 & raw$F2D08B_P < 0)*100
+  )
+)
+
+missing_table[,2:3] <- round(missing_table[,2:3],2)
+
+print(missing_table)
+
+
+
+# White regression
+reg_white <- glm(
+  everSuspended ~
+    lnTotalIncome +
+    momCollege +
+    dadCollege +
+    motherBirthAge +
+    motherJob +
+    fatherJob +
+    siblings +
+    hasMaleGuardian +
+    hasFemaleGuardian,
+  data = subset(df_clean, isBlHs == 0),
+  family = binomial(link = "logit")
+)
+
+# Minority regression
+reg_minority <- glm(
+  everSuspended ~
+    lnTotalIncome +
+    momCollege +
+    dadCollege +
+    motherBirthAge +
+    motherJob +
+    fatherJob +
+    siblings +
+    hasMaleGuardian +
+    hasFemaleGuardian,
+  data = subset(df_clean, isBlHs == 1),
+  family = binomial(link = "logit")
+)
+
+# Pooled regression
+reg_pooled <- glm(
+  everSuspended ~
+    lnTotalIncome +
+    momCollege +
+    dadCollege +
+    motherBirthAge +
+    motherJob +
+    fatherJob +
+    siblings +
+    hasMaleGuardian +
+    hasFemaleGuardian,
+  data = df_clean,
+  family = binomial(link = "logit")
+)
+
+summary(reg_white)
+summary(reg_minority)
+summary(reg_pooled)
+
+
+
